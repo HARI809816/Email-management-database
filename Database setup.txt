@@ -1,0 +1,209 @@
+================================================================
+  DATA MANAGER API — DATABASE SETUP GUIDE
+================================================================
+
+REQUIREMENTS
+------------
+- MongoDB 6.0 or higher
+- Running locally OR via MongoDB Atlas (cloud)
+
+
+================================================================
+OPTION 1 — LOCAL MONGODB SETUP
+================================================================
+
+STEP 1: Install MongoDB
+-----------------------
+Windows:
+  Download installer from https://www.mongodb.com/try/download/community
+  Run the .msi installer and follow the prompts.
+  MongoDB will be installed as a Windows Service (auto-starts).
+
+macOS:
+  brew tap mongodb/brew
+  brew install mongodb-community
+  brew services start mongodb-community
+
+Ubuntu/Linux:
+  sudo apt-get install -y mongodb
+  sudo systemctl start mongodb
+  sudo systemctl enable mongodb
+
+STEP 2: Verify MongoDB is Running
+----------------------------------
+  mongosh
+  > show dbs
+
+  You should see a list of databases. Type "exit" to quit.
+
+STEP 3: No manual DB creation needed
+--------------------------------------
+  MongoDB creates the database and collections automatically
+  when the FastAPI app first connects and inserts data.
+
+
+================================================================
+OPTION 2 — MONGODB ATLAS (CLOUD) SETUP
+================================================================
+
+STEP 1: Create a free account at https://cloud.mongodb.com
+
+STEP 2: Create a new Project and Cluster
+  - Choose "Shared" (free tier) or any paid tier
+  - Select your preferred cloud region
+
+STEP 3: Create a Database User
+  - Go to: Database Access > Add New Database User
+  - Set username and password (save these)
+  - Role: "Read and Write to any database"
+
+STEP 4: Whitelist your IP
+  - Go to: Network Access > Add IP Address
+  - Add your current IP or use 0.0.0.0/0 to allow all (dev only)
+
+STEP 5: Get your Connection String
+  - Go to: Clusters > Connect > Connect your application
+  - Select Driver: Python, Version: 3.12 or later
+  - Copy the connection string, it looks like:
+    mongodb+srv://<username>:<password>@cluster0.xxxxx.mongodb.net/
+
+STEP 6: Update your .env file
+  MONGO_URI=mongodb+srv://<username>:<password>@cluster0.xxxxx.mongodb.net/
+  DB_NAME=data_manager
+
+
+================================================================
+DATABASE STRUCTURE
+================================================================
+
+Database Name : data_manager  (configurable in .env)
+
+Collections created automatically on first run:
+  - raw          -> incoming records
+  - validated    -> approved/validated records
+  - history      -> action logs
+  - counters     -> serial number tracker (internal)
+
+
+INDEXES (auto-created by the app on startup)
+--------------------------------------------
+
+Collection: raw
+  - email      (unique)    -> prevents duplicate emails
+  - serial_no  (index)     -> fast serial range queries
+  - date_added (index)     -> fast date range queries
+
+Collection: validated
+  - email      (unique)    -> prevents duplicate emails
+  - serial_no  (index)     -> fast serial range queries
+  - date_added (index)     -> fast date range queries
+
+
+DOCUMENT SHAPES
+---------------
+
+raw document:
+{
+  "_id":        ObjectId (auto),
+  "serial_no":  1,
+  "name":       "Alice",
+  "email":      "alice@example.com",
+  "country":    "USA",
+  "date_added": ISODate("2024-06-01T10:00:00Z")
+}
+
+validated document:
+{
+  "_id":          ObjectId (auto),
+  "serial_no":    1,
+  "name":         "Alice",
+  "email":        "alice@example.com",
+  "country":      "USA",
+  "date_added":   ISODate("2024-06-01T10:00:00Z"),
+  "validated_at": ISODate("2024-06-02T08:30:00Z")
+}
+
+history document:
+{
+  "_id":          ObjectId (auto),
+  "action":       "ingest",
+  "performed_at": ISODate("2024-06-01T10:00:00Z"),
+  "record_count": 10,
+  "filters_used": null,
+  "status":       "partial",
+  "notes":        "2 duplicates skipped."
+}
+
+counters document (internal):
+{
+  "_id": "raw_serial",
+  "seq": 42
+}
+
+
+================================================================
+MANUAL MONGOSH COMMANDS (OPTIONAL / FOR DEBUGGING)
+================================================================
+
+Connect to your database:
+  mongosh
+  use data_manager
+
+View all raw records:
+  db.raw.find().pretty()
+
+View all validated records:
+  db.validated.find().pretty()
+
+View history logs:
+  db.history.find().sort({ performed_at: -1 }).pretty()
+
+Count records in raw:
+  db.raw.countDocuments()
+
+Drop a collection (careful!):
+  db.raw.drop()
+
+Check indexes on raw:
+  db.raw.getIndexes()
+
+Reset serial counter:
+  db.counters.updateOne({ _id: "raw_serial" }, { $set: { seq: 0 } })
+
+
+================================================================
+ENVIRONMENT FILE (.env)
+================================================================
+
+Create a file named ".env" in the project root with:
+
+  MONGO_URI=mongodb://localhost:27017
+  DB_NAME=data_manager
+
+For Atlas, replace MONGO_URI with your Atlas connection string.
+
+
+================================================================
+TROUBLESHOOTING
+================================================================
+
+Error: "Connection refused on port 27017"
+  -> MongoDB is not running. Start it with:
+    Windows : net start MongoDB
+    macOS   : brew services start mongodb-community
+    Linux   : sudo systemctl start mongodb
+
+Error: "Authentication failed"
+  -> Wrong username/password in MONGO_URI.
+     Check your .env file and Atlas user credentials.
+
+Error: "E11000 duplicate key error"
+  -> Trying to insert a duplicate email. This is handled
+     gracefully by the app — it skips duplicates automatically.
+
+Error: "No module named motor"
+  -> Run: pip install -r requirements.txt
+
+================================================================
+END OF DATABASE SETUP GUIDE
+================================================================
