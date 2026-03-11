@@ -10,14 +10,14 @@ project/
 ├── main.py                  # App entry point
 ├── database.py              # MongoDB connection + serial counter
 ├── models.py                # Pydantic schemas
-├── utils.py                 # Shared helpers (query builder, history logger)
+├── utils.py                 # Shared helpers (query builder, history logger, serializer)
 ├── routes/
 │   ├── ingest.py            # POST /ingest
 │   ├── raw.py               # POST /raw/view, POST /raw/download
-│   ├── validate.py          # POST /validate
+│   ├── validate.py          # POST /validate (Automated Proxy)
 │   ├── validated.py         # POST /validated/view, POST /validated/download
 │   └── history.py           # GET /history
-├── .env                     # MongoDB URI and DB name
+├── .env                     # MongoDB URI, DB name, and External Validation URL
 └── requirements.txt         # Python dependencies
 ```
 
@@ -25,8 +25,9 @@ project/
 
 ## Requirements
 
-- Python 3.10+
-- MongoDB running locally or via Atlas
+- Python 3.11+
+- MongoDB (Local or Atlas)
+- httpx (for external validation)
 
 ---
 
@@ -36,13 +37,17 @@ project/
 # 1. Clone or download the project
 cd project
 
-# 2. Install dependencies
+# 2. Create and activate virtual environment
+python -m venv venv
+.\venv\Scripts\activate
+
+# 3. Install dependencies
 pip install -r requirements.txt
 
-# 3. Configure your .env file
-# Edit .env and set your MONGO_URI and DB_NAME
+# 4. Configure your .env file
+# Edit .env and set your MONGO_URI, DB_NAME, and EXTERNAL_VALIDATION_URL
 
-# 4. Run the server
+# 5. Run the server
 uvicorn main:app --reload
 ```
 
@@ -51,27 +56,37 @@ Swagger docs at:     http://localhost:8000/docs
 
 ---
 
+## External Validation Workflow
+
+This API supports an **Automated Validation Proxy** workflow:
+1. **Pull**: The server fetches raw records based on your filters (date, serial number, etc.).
+2. **Proxy**: The server POSTs these records to your `EXTERNAL_VALIDATION_URL`.
+3. **Wait**: The server waits for your external application to process the emails and return a JSON list of "Good" records.
+4. **Save**: The server automatically saves the returned records to the `validated` collection.
+
+---
+
 ## Collections (Tables)
 
 ### raw
-Stores all incoming records from the external FastAPI service.
+Stores all incoming records.
 
 | Field      | Type     | Notes                        |
 |------------|----------|------------------------------|
 | serial_no  | int      | Auto-incremented             |
 | name       | string   |                              |
-| email      | string   | Unique — duplicates skipped  |
+| email      | string   | Unique - duplicates skipped  |
 | country    | string   |                              |
 | date_added | datetime | Auto-set by server           |
 
 ### validated
-Stores records that have been reviewed and moved from raw.
+Stores records returned by the external validation service.
 
 | Field        | Type     | Notes                        |
 |--------------|----------|------------------------------|
 | serial_no    | int      | Carried from raw             |
 | name         | string   |                              |
-| email        | string   | Unique — duplicates skipped  |
+| email        | string   | Unique - duplicates skipped  |
 | country      | string   |                              |
 | date_added   | datetime | Carried from raw             |
 | validated_at | datetime | Auto-set at validation time  |
@@ -95,16 +110,7 @@ Logs every action performed in the system.
 ### Ingest
 | Method | Endpoint | Description                           |
 |--------|----------|---------------------------------------|
-| POST   | /ingest  | Receive records from external FastAPI |
-
-Request body (list):
-```json
-[
-  { "name": "Alice", "email": "alice@example.com", "country": "USA" }
-]
-```
-
----
+| POST   | /ingest  | Receive records for the raw collection |
 
 ### Raw
 | Method | Endpoint      | Description         |
@@ -112,14 +118,12 @@ Request body (list):
 | POST   | /raw/view     | View raw records    |
 | POST   | /raw/download | Download raw as CSV |
 
----
+### Validate (The Automated Proxy)
+| Method | Endpoint  | Description                                      |
+|--------|-----------|--------------------------------------------------|
+| POST   | /validate | Trigger external validation and move to validated |
 
-### Validate
-| Method | Endpoint  | Description                         |
-|--------|-----------|-------------------------------------|
-| POST   | /validate | Move raw records to validated table |
-
----
+**Note**: This endpoint coordinates with the `EXTERNAL_VALIDATION_URL` defined in your `.env`.
 
 ### Validated
 | Method | Endpoint            | Description               |
@@ -129,46 +133,19 @@ Request body (list):
 
 ---
 
-### History
-| Method | Endpoint | Description                            |
-|--------|----------|----------------------------------------|
-| GET    | /history | View all logs (filter by action param) |
-
-Example: `GET /history?action=validate&limit=20&offset=0`
-
----
-
-## Filter Parameters
-
-All view, download, and validate endpoints accept these optional filters in the request body:
-
-```json
-{
-  "date_from":   "2024-01-01T00:00:00",
-  "date_to":     "2024-12-31T23:59:59",
-  "serial_from": 1,
-  "serial_to":   100,
-  "limit":       50,
-  "offset":      0
-}
-```
-
-All fields are optional. If none are provided, all records are returned.
-
----
-
 ## Environment Variables (.env)
 
-```
-MONGO_URI=mongodb://localhost:27017
-DB_NAME=data_manager
+```text
+MONGO_URI=mongodb+srv://user:pass@cluster.mongodb.net/
+DB_NAME=EmailDataBase
+EXTERNAL_VALIDATION_URL=http://your-app-url/validate
 ```
 
 ---
 
-## Notes
+## Technical Notes
 
-- Duplicate emails are automatically skipped during ingest and validation
-- serial_no is safely auto-incremented using MongoDB atomic findAndModify
-- Every action (ingest, validate, download) is automatically logged to history
-- Visit /docs for the full interactive Swagger UI to test all endpoints
+- **Deduplication**: Duplicate emails are automatically skipped during both ingest and validation.
+- **JSON Serialization**: The system handles MongoDB `datetime` objects by converting them to ISO strings before communicating with external APIs.
+- **Stability**: Removed terminal emojis to ensure compatibility with Windows Command Prompt and PowerShell (prevents UnicodeEncodeError).
+- **Atomic Counters**: `serial_no` is incremented using MongoDB's atomic `findAndModify` to ensure no overlaps.
