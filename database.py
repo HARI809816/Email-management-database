@@ -20,7 +20,11 @@ def _get_client():
             MONGO_URI,
             tls=True,
             tlsCAFile=certifi.where(),
-            serverSelectionTimeoutMS=5000,
+            # Required on Vercel (Python 3.12 + OpenSSL 3 vs MongoDB Atlas TLS)
+            tlsAllowInvalidCertificates=True,
+            serverSelectionTimeoutMS=8000,
+            connectTimeoutMS=8000,
+            socketTimeoutMS=20000,
         )
         _db = _client[DB_NAME]
     return _client, _db
@@ -28,28 +32,30 @@ def _get_client():
 
 async def connect_db():
     """
-    Called by the FastAPI lifespan on startup.
-    In serverless environments (Vercel) this is a no-op – the client is
-    created lazily on the first request so cold-starts don't time out.
+    Called by FastAPI lifespan. Initialises the client and creates indexes.
+    All errors are caught so a transient Atlas issue never kills the process.
     """
     global _client, _db
-    if _client is None:
-        _client, _db = _get_client()[0], _get_client()[1]
+    _client, _db = _get_client()
 
-    # Create indexes once per process start (safe to call repeatedly).
-    db = _db
-    await db["raw"].create_index("email", unique=True)
-    await db["validated"].create_index("email", unique=True)
-    await db["raw"].create_index("serial_no")
-    await db["validated"].create_index("serial_no")
-    await db["raw"].create_index("date_added")
-    await db["validated"].create_index("date_added")
-    await db["counters"].update_one(
-        {"_id": "raw_serial"},
-        {"$setOnInsert": {"seq": 0}},
-        upsert=True,
-    )
-    print("MongoDB connected and indexes ensured.")
+    try:
+        db = _db
+        await db["raw"].create_index("email", unique=True)
+        await db["validated"].create_index("email", unique=True)
+        await db["raw"].create_index("serial_no")
+        await db["validated"].create_index("serial_no")
+        await db["raw"].create_index("date_added")
+        await db["validated"].create_index("date_added")
+        await db["counters"].update_one(
+            {"_id": "raw_serial"},
+            {"$setOnInsert": {"seq": 0}},
+            upsert=True,
+        )
+        print("MongoDB connected and indexes ensured.")
+    except Exception as exc:
+        # Log but do NOT raise – a startup crash kills the whole serverless
+        # function. Routes will return a 503 if the DB is truly unreachable.
+        print(f"[WARNING] MongoDB startup error (will retry on first request): {exc}")
 
 
 async def close_db():
