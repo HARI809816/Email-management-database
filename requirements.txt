@@ -1,8 +1,9 @@
 fastapi
 uvicorn
 motor
-pydantic
+pydantic[email]
 python-dotenv
 pandas
 certifi
 httpx
+email-validator
