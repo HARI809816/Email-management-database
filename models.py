@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 
 
@@ -8,16 +8,39 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 
 class IngestRecord(BaseModel):
-    """Schema for incoming records from external FastAPI."""
-    name: str
-    email: EmailStr
-    country: str
+    """Schema for incoming records from external FastAPI.
+    
+    Required : name, email, country
+    Optional : domain, phone_number, label, status,
+               mail_sender_name, profile_name, mail_sending_date
+    """
+    # ── Required ──────────────────────────────
+    name:             str
+    email:            str   # kept as str; validated manually in ingest route
+    country:          str
+
+    # ── Optional ──────────────────────────────
+    domain:           Optional[str]      = None
+    phone_number:     Optional[str]      = None
+    label:            Optional[str]      = None
+    status:           Optional[str]      = None
+    mail_sender_name: Optional[str]      = None
+    profile_name:     Optional[str]      = None
+    mail_sending_date:Optional[datetime] = None
+
+
+class IngestSkipped(BaseModel):
+    """Details about a record that was skipped during ingest."""
+    email:  Optional[str] = None
+    name:   Optional[str] = None
+    reason: str
 
 
 class IngestResponse(BaseModel):
-    inserted: int
-    skipped: int
-    message: str
+    inserted:        int
+    skipped:         int
+    message:         str
+    skipped_details: List[IngestSkipped] = []
 
 
 # ─────────────────────────────────────────────
@@ -39,11 +62,19 @@ class FilterParams(BaseModel):
 # ─────────────────────────────────────────────
 
 class RawRecord(BaseModel):
-    serial_no:  int
-    name:       str
-    email:      str
-    country:    str
-    date_added: datetime
+    serial_no:         int
+    name:              str
+    email:             str
+    country:           str
+    date_added:        datetime
+    # optional extended fields
+    domain:            Optional[str]      = None
+    phone_number:      Optional[str]      = None
+    label:             Optional[str]      = None
+    status:            Optional[str]      = None
+    mail_sender_name:  Optional[str]      = None
+    profile_name:      Optional[str]      = None
+    mail_sending_date: Optional[datetime] = None
 
 
 # ─────────────────────────────────────────────
@@ -51,12 +82,20 @@ class RawRecord(BaseModel):
 # ─────────────────────────────────────────────
 
 class ValidatedRecord(BaseModel):
-    serial_no:    int
-    name:         str
-    email:        str
-    country:      str
-    date_added:   datetime
-    validated_at: datetime
+    serial_no:         int
+    name:              str
+    email:             str
+    country:           str
+    date_added:        datetime
+    validated_at:      datetime
+    # optional extended fields
+    domain:            Optional[str]      = None
+    phone_number:      Optional[str]      = None
+    label:             Optional[str]      = None
+    status:            Optional[str]      = None
+    mail_sender_name:  Optional[str]      = None
+    profile_name:      Optional[str]      = None
+    mail_sending_date: Optional[datetime] = None
 
 
 # ─────────────────────────────────────────────
