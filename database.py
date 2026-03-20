@@ -69,14 +69,23 @@ async def close_db():
 
 async def get_next_serial() -> int:
     """Atomically increment and return the next serial number."""
+    return await get_next_serial_batch(1)
+
+
+async def get_next_serial_batch(count: int) -> int:
+    """
+    Atomically increment the counter by N and return the STARTING number of this range.
+    Example: if seq was 10 and we ask for 5, we return 11 (and seq becomes 15).
+    """
     _, db = _get_client()
     result = await db["counters"].find_one_and_update(
         {"_id": "raw_serial"},
-        {"$inc": {"seq": 1}},
+        {"$inc": {"seq": count}},
         return_document=True,
         upsert=True,
     )
-    return result["seq"]
+    # The returned 'seq' is the NEW end – the start is (new - count + 1)
+    return result["seq"] - count + 1
 
 
 def get_db():

@@ -4,7 +4,7 @@ from fastapi import APIRouter
 from datetime import datetime
 from pydantic import BaseModel
 
-from database import get_db, get_next_serial
+from database import get_db, get_next_serial_batch
 from models import IngestRecord, IngestResponse, IngestSkipped
 from utils import log_history
 
@@ -37,81 +37,103 @@ class ExternalAppWrapper(BaseModel):
 async def ingest_records(payload: ExternalAppWrapper):
     """
     Receive records from another FastAPI service.
-
-    Accepts a wrapper object:
-        {
-          "status":  "...",
-          "summary": {...},
-          "preview": [{name, email, country, ...}, ...],
-          "data":    [{name, email, country, ...}, ...]  ← used if present, else preview
-        }
-
-    Required fields  : name, email, country
-    Optional fields  : domain (auto-derived if absent), phone_number, label,
-                       status, mail_sender_name, profile_name, mail_sending_date
+    
+    Optimized for bulk handling:
+      1. Batch check existing emails in ONE query.
+      2. Fetch a range of serial numbers in ONE query.
+      3. Insert all new records in ONE query.
     """
     # Use 'data' if it has entries, otherwise fall back to 'preview'
     records = payload.data if payload.data else payload.preview
+    if not records:
+        return IngestResponse(inserted=0, skipped=0, message="No records provided.")
 
     db = get_db()
-    inserted_count  = 0
-    skipped_count   = 0
     skipped_details: list[IngestSkipped] = []
-
+    
+    # ── 1. Initial Filtering & Format Validation (In-memory) ─────────────────
+    to_check_in_db = []
+    seen_in_batch  = set()
+    
     for record in records:
-        raw_email   = str(record.email).strip()   if record.email   else ""
-        raw_name    = record.name.strip()          if record.name    else ""
-        raw_country = record.country.strip()       if record.country else ""
+        raw_email   = str(record.email).strip().lower() if record.email   else ""
+        raw_name    = record.name.strip()               if record.name    else ""
+        raw_country = record.country.strip()            if record.country else ""
 
-        # ── 1. Validate required fields ──────────────────────────────────────
+        # Validate required fields
         missing = []
-        if not raw_name:
-            missing.append("name")
-        if not raw_email:
-            missing.append("email")
-        if not raw_country:
-            missing.append("country")
+        if not raw_name:    missing.append("name")
+        if not raw_email:   missing.append("email")
+        if not raw_country: missing.append("country")
 
         if missing:
             skipped_details.append(IngestSkipped(
-                email=raw_email or None,
-                name=raw_name  or None,
+                email=raw_email or None, name=raw_name or None,
                 reason=f"Missing required field(s): {', '.join(missing)}"
             ))
-            skipped_count += 1
             continue
 
-        # ── 2. Validate email format ─────────────────────────────────────────
+        # Validate format
         if not _EMAIL_RE.match(raw_email):
             skipped_details.append(IngestSkipped(
-                email=raw_email,
-                name=raw_name,
+                email=raw_email, name=raw_name, 
                 reason=f"Invalid email format: '{raw_email}'"
             ))
-            skipped_count += 1
             continue
 
-        # ── 3. Duplicate check ───────────────────────────────────────────────
-        existing = await db["raw"].find_one({"email": raw_email})
-        if existing:
+        # In-batch duplicate check
+        if raw_email in seen_in_batch:
             skipped_details.append(IngestSkipped(
-                email=raw_email,
-                name=raw_name,
+                email=raw_email, name=raw_name, 
+                reason="Duplicate within the incoming batch list"
+            ))
+            continue
+            
+        seen_in_batch.add(raw_email)
+        to_check_in_db.append((record, raw_email, raw_name, raw_country))
+
+    if not to_check_in_db:
+        return IngestResponse(
+            inserted=0, skipped=len(skipped_details),
+            message="No valid records to process.",
+            skipped_details=skipped_details
+        )
+
+    # ── 2. Batch Existence Check (ONE DB Call) ───────────────────────────────
+    batch_emails   = [x[1] for x in to_check_in_db]
+    cursor         = db["raw"].find({"email": {"$in": batch_emails}}, {"email": 1})
+    db_existing    = {doc["email"] async for doc in cursor}
+
+    # ── 3. Final List Preparation ────────────────────────────────────────────
+    ready_to_insert = []
+    for record, email, name, country in to_check_in_db:
+        if email in db_existing:
+            skipped_details.append(IngestSkipped(
+                email=email, name=name, 
                 reason="Duplicate email — already exists in the database"
             ))
-            skipped_count += 1
             continue
+        ready_to_insert.append((record, email, name, country))
 
-        # ── 4. Auto-derive domain if not provided ────────────────────────────
-        domain = (record.domain or "").strip() or _derive_domain(raw_email)
+    if not ready_to_insert:
+        return IngestResponse(
+            inserted=0, skipped=len(skipped_details),
+            message="All new records were duplicates of existing DB entries.",
+            skipped_details=skipped_details
+        )
 
-        # ── 5. Build document ─────────────────────────────────────────────────
-        serial = await get_next_serial()
-        doc = {
-            "serial_no":  serial,
-            "name":       raw_name,
-            "email":      raw_email,
-            "country":    raw_country,
+    # ── 4. Batch Serial Allocation (ONE DB Call) ─────────────────────────────
+    start_serial = await get_next_serial_batch(len(ready_to_insert))
+
+    # ── 5. Build Documents ───────────────────────────────────────────────────
+    docs = []
+    for i, (record, email, name, country) in enumerate(ready_to_insert):
+        domain = (record.domain or "").strip() or _derive_domain(email)
+        docs.append({
+            "serial_no":  start_serial + i,
+            "name":       name,
+            "email":      email,
+            "country":    country,
             "date_added": datetime.utcnow(),
             "domain":            domain or None,
             "phone_number":      (record.phone_number or "").strip() or None,
@@ -120,23 +142,25 @@ async def ingest_records(payload: ExternalAppWrapper):
             "mail_sender_name":  (record.mail_sender_name or "").strip() or None,
             "profile_name":      (record.profile_name or "").strip() or None,
             "mail_sending_date": record.mail_sending_date or None,
-        }
+        })
 
-        # ── 6. Insert ─────────────────────────────────────────────────────────
-        try:
-            await db["raw"].insert_one(doc)
-            inserted_count += 1
-        except Exception as exc:
-            skipped_details.append(IngestSkipped(
-                email=raw_email,
-                name=raw_name,
-                reason=f"DB insert error: {exc}"
-            ))
-            skipped_count += 1
+    # ── 6. Bulk Insert (ONE DB Call) ─────────────────────────────────────────
+    inserted_count = 0
+    try:
+        await db["raw"].insert_many(docs, ordered=False)
+        inserted_count = len(docs)
+    except Exception as exc:
+        # Some might have failed (e.g. race condition unique index)
+        # Motor BulkWriteError has details.nInserted
+        inserted_count = getattr(exc, "details", {}).get("nInserted", 0)
+        skipped_details.append(IngestSkipped(
+            reason=f"Bulk insert partial failure/error: {exc}"
+        ))
 
-    # ── History log ───────────────────────────────────────────────────────────
-    status = "success" if skipped_count == 0 else "partial"
-    notes  = f"{skipped_count} skipped." if skipped_count else None
+    # ── 7. History & Response ────────────────────────────────────────────────
+    skipped_count = len(skipped_details)
+    status        = "success" if skipped_count == 0 else "partial"
+    notes         = f"{skipped_count} skipped." if skipped_count else None
 
     await log_history(
         action="ingest",

@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from contextlib import asynccontextmanager
 
 from database import connect_db, close_db
-from routes import ingest, raw, validate, validated, history
+from routes import ingest, raw, validate, validated, history, admin
 
 
 @asynccontextmanager
@@ -26,6 +26,7 @@ app.include_router(raw.router)
 app.include_router(validate.router)
 app.include_router(validated.router)
 app.include_router(history.router)
+app.include_router(admin.router)
 
 
 @app.get("/", tags=["Health"])
