@@ -1,6 +1,8 @@
 import re
-from fastapi import APIRouter, Request, HTTPException
+from typing import Any
+from fastapi import APIRouter
 from datetime import datetime
+from pydantic import BaseModel
 
 from database import get_db, get_next_serial
 from models import IngestRecord, IngestResponse, IngestSkipped
@@ -20,55 +22,37 @@ def _derive_domain(email: str) -> str:
         return ""
 
 
+class ExternalAppWrapper(BaseModel):
+    """
+    Wrapper object sent by the external app.
+    Records are read from 'data' if present, otherwise from 'preview'.
+    """
+    status:  str                  = "success"
+    summary: Any                  = None
+    preview: list[IngestRecord]   = []
+    data:    list[IngestRecord]   = []
+
+
 @router.post("", response_model=IngestResponse)
-async def ingest_records(request: Request):
+async def ingest_records(payload: ExternalAppWrapper):
     """
     Receive records from another FastAPI service.
 
-    Accepts two formats:
-      1. A plain list:  [{name, email, country, ...}, ...]
-      2. A wrapper object from an external app:
-            {
-              "status": "...",
-              "summary": {...},
-              "preview": [{name, email, country, ...}, ...],
-              "data":    [{name, email, country, ...}, ...]   ← used if present, else preview
-            }
+    Accepts a wrapper object:
+        {
+          "status":  "...",
+          "summary": {...},
+          "preview": [{name, email, country, ...}, ...],
+          "data":    [{name, email, country, ...}, ...]  ← used if present, else preview
+        }
 
     Required fields  : name, email, country
     Optional fields  : domain (auto-derived if absent), phone_number, label,
                        status, mail_sender_name, profile_name, mail_sending_date
     """
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body.")
+    # Use 'data' if it has entries, otherwise fall back to 'preview'
+    records = payload.data if payload.data else payload.preview
 
-    # ── Determine the list of raw dicts ──────────────────────────────────────
-    if isinstance(body, list):
-        # Format 1: plain list sent directly
-        raw_list = body
-    elif isinstance(body, dict):
-        # Format 2: wrapper object — prefer "data", fall back to "preview"
-        if "data" in body and isinstance(body["data"], list):
-            raw_list = body["data"]
-        elif "preview" in body and isinstance(body["preview"], list):
-            raw_list = body["preview"]
-        else:
-            raise HTTPException(
-                status_code=422,
-                detail='Wrapper object must contain a "data" or "preview" list.'
-            )
-    else:
-        raise HTTPException(status_code=422, detail="Body must be a list or a wrapper object.")
-
-    # ── Parse each raw dict into IngestRecord ─────────────────────────────────
-    try:
-        records = [IngestRecord(**item) for item in raw_list]
-    except Exception as exc:
-        raise HTTPException(status_code=422, detail=f"Record validation error: {exc}")
-
-    # ── Process records ───────────────────────────────────────────────────────
     db = get_db()
     inserted_count  = 0
     skipped_count   = 0
@@ -129,7 +113,6 @@ async def ingest_records(request: Request):
             "email":      raw_email,
             "country":    raw_country,
             "date_added": datetime.utcnow(),
-            # optional — stored as None if not provided
             "domain":            domain or None,
             "phone_number":      (record.phone_number or "").strip() or None,
             "label":             (record.label or "").strip()        or None,
