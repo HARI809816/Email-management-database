@@ -21,6 +21,7 @@ class IngestRecord(BaseModel):
 
     # ── Optional ──────────────────────────────
     domain:           Optional[str]      = None
+    email_domain:     Optional[str]      = None   # sent by external app; same as domain
     phone_number:     Optional[str]      = None
     label:            Optional[str]      = None
     status:           Optional[str]      = None

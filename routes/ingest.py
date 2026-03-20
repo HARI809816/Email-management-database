@@ -1,5 +1,5 @@
 import re
-from fastapi import APIRouter
+from fastapi import APIRouter, Request, HTTPException
 from datetime import datetime
 
 from database import get_db, get_next_serial
@@ -21,20 +21,54 @@ def _derive_domain(email: str) -> str:
 
 
 @router.post("", response_model=IngestResponse)
-async def ingest_records(records: list[IngestRecord]):
+async def ingest_records(request: Request):
     """
-    Receive a list of records from another FastAPI service.
+    Receive records from another FastAPI service.
+
+    Accepts two formats:
+      1. A plain list:  [{name, email, country, ...}, ...]
+      2. A wrapper object from an external app:
+            {
+              "status": "...",
+              "summary": {...},
+              "preview": [{name, email, country, ...}, ...],
+              "data":    [{name, email, country, ...}, ...]   ← used if present, else preview
+            }
 
     Required fields  : name, email, country
     Optional fields  : domain (auto-derived if absent), phone_number, label,
                        status, mail_sender_name, profile_name, mail_sending_date
-
-    Rules:
-      - If name, email, or country is missing/empty  → skip with reason.
-      - If the email already exists in the DB        → skip (duplicate).
-      - Valid optional fields are stored as-is; absent ones are left empty.
-      - domain is auto-derived from the email when not supplied.
     """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body.")
+
+    # ── Determine the list of raw dicts ──────────────────────────────────────
+    if isinstance(body, list):
+        # Format 1: plain list sent directly
+        raw_list = body
+    elif isinstance(body, dict):
+        # Format 2: wrapper object — prefer "data", fall back to "preview"
+        if "data" in body and isinstance(body["data"], list):
+            raw_list = body["data"]
+        elif "preview" in body and isinstance(body["preview"], list):
+            raw_list = body["preview"]
+        else:
+            raise HTTPException(
+                status_code=422,
+                detail='Wrapper object must contain a "data" or "preview" list.'
+            )
+    else:
+        raise HTTPException(status_code=422, detail="Body must be a list or a wrapper object.")
+
+    # ── Parse each raw dict into IngestRecord ─────────────────────────────────
+    try:
+        records = [IngestRecord(**item) for item in raw_list]
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Record validation error: {exc}")
+
+    # ── Process records ───────────────────────────────────────────────────────
     db = get_db()
     inserted_count  = 0
     skipped_count   = 0
@@ -84,10 +118,10 @@ async def ingest_records(records: list[IngestRecord]):
             skipped_count += 1
             continue
 
-        # ── 3. Auto-derive domain if not provided ────────────────────────────
+        # ── 4. Auto-derive domain if not provided ────────────────────────────
         domain = (record.domain or "").strip() or _derive_domain(raw_email)
 
-        # ── 4. Build document (optional fields only if present) ──────────────
+        # ── 5. Build document ─────────────────────────────────────────────────
         serial = await get_next_serial()
         doc = {
             "serial_no":  serial,
@@ -95,7 +129,7 @@ async def ingest_records(records: list[IngestRecord]):
             "email":      raw_email,
             "country":    raw_country,
             "date_added": datetime.utcnow(),
-            # optional — always stored; empty string / None if absent
+            # optional — stored as None if not provided
             "domain":            domain or None,
             "phone_number":      (record.phone_number or "").strip() or None,
             "label":             (record.label or "").strip()        or None,
@@ -105,7 +139,7 @@ async def ingest_records(records: list[IngestRecord]):
             "mail_sending_date": record.mail_sending_date or None,
         }
 
-        # ── 5. Insert ────────────────────────────────────────────────────────
+        # ── 6. Insert ─────────────────────────────────────────────────────────
         try:
             await db["raw"].insert_one(doc)
             inserted_count += 1
@@ -117,7 +151,7 @@ async def ingest_records(records: list[IngestRecord]):
             ))
             skipped_count += 1
 
-    # ── History log ──────────────────────────────────────────────────────────
+    # ── History log ───────────────────────────────────────────────────────────
     status = "success" if skipped_count == 0 else "partial"
     notes  = f"{skipped_count} skipped." if skipped_count else None
 
