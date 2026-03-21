@@ -26,6 +26,14 @@ def build_query(filters: FilterParams) -> dict:
         if filters.serial_to is not None:
             query["serial_no"]["$lte"] = filters.serial_to
 
+    # ── Domain ───────────────────────────────────────────────────────────────
+    if filters.domain:
+        query["domain"] = filters.domain.strip()
+
+    # ── Country ──────────────────────────────────────────────────────────────
+    if filters.country:
+        query["country"] = filters.country.strip()
+
     return query
 
 

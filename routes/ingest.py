@@ -142,7 +142,9 @@ async def ingest_records(payload: ExternalAppWrapper):
             "mail_sender_name":  (record.mail_sender_name or "").strip() or None,
             "profile_name":      (record.profile_name or "").strip() or None,
             "mail_sending_date": record.mail_sending_date or None,
+            "validation":         False,
         })
+
 
     # ── 6. Bulk Insert (ONE DB Call) ─────────────────────────────────────────
     inserted_count = 0

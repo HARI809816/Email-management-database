@@ -1,25 +1,26 @@
-import httpx
-import os
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 from datetime import datetime
-
 from database import get_db
-from models import FilterParams, ValidateResponse, ValidatedRecord
+from models import (
+    FilterParams, ValidateResponse, ValidatedRecord, ValidatedIngest
+)
 from utils import build_query, log_history, serialize_doc
 
 router = APIRouter(prefix="/validate", tags=["Validate"])
 
-EXTERNAL_VALIDATION_URL = os.getenv("EXTERNAL_VALIDATION_URL")
 
-@router.post("", response_model=ValidateResponse)
-async def validate_records(filters: FilterParams = FilterParams()):
+@router.post("", response_model=list[dict])
+async def export_for_validation(filters: FilterParams = FilterParams()):
     """
-    1. Fetch raw records matching filters.
-    2. POST them to External User App for validation.
-    3. Save the returned 'Good' records into validated collection.
+    Stage 1: Export records for validation.
+    1. Fetch raw records matching filters AND validation == False.
+    2. Mark these records as validation = True (Auto-lock).
+    3. Return them to the frontend for processing.
     """
     db    = get_db()
     query = build_query(filters)
+    # Only fetch records NOT yet exported/validated
+    query["validation"] = False
 
     # Step 1: Fetch matching raw records
     cursor = db["raw"].find(query, {"_id": 0}).sort("serial_no", 1)
@@ -31,79 +32,99 @@ async def validate_records(filters: FilterParams = FilterParams()):
     raw_records = await cursor.to_list(length=None)
 
     if not raw_records:
-        return ValidateResponse(
-            validated=0,
-            skipped=0,
-            message="No records found matching the given filters."
+        return []
+
+    # Step 2: Mark as processing (Auto-lock)
+    batch_emails = [doc["email"] for doc in raw_records]
+    if batch_emails:
+        await db["raw"].update_many(
+            {"email": {"$in": batch_emails}},
+            {"$set": {"validation": True}}
         )
 
-    # Serialize records to handle datetime objects before sending JSON
-    raw_records = [serialize_doc(doc) for doc in raw_records]
+    # Step 3: Log & Return
+    await log_history(
+        action="export_for_validation",
+        record_count=len(raw_records),
+        status="success",
+        filters=filters,
+        notes=f"Exported {len(raw_records)} records for processing."
+    )
 
-    # Step 2 & 3: Send to External App and wait for response
-    if not EXTERNAL_VALIDATION_URL:
-        raise HTTPException(status_code=500, detail="EXTERNAL_VALIDATION_URL not configured in .env")
+    return [serialize_doc(doc) for doc in raw_records]
 
-    try:
-        async with httpx.AsyncClient() as client:
-            # We send the raw records to the external app
-            response = await client.post(
-                EXTERNAL_VALIDATION_URL, 
-                json=raw_records,
-                timeout=60.0 # Validation might take time
-            )
-            response.raise_for_status()
-            validated_from_external = response.json() # Expected list of validated records
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"External Validation App Error: {str(e)}")
 
-    if not isinstance(validated_from_external, list):
-        raise HTTPException(status_code=502, detail="External App returned invalid format (expected list)")
+@router.post("/bulk-insert", response_model=ValidateResponse)
+async def bulk_insert_validated(payload: ValidatedIngest):
+    """
+    Stage 2: Bulk ingest validated records from frontend.
+    Optimized for performance: 
+      1. Batch check duplicates.
+      2. Bulk insert new records.
+    """
+    records = payload.records
+    if not records:
+        return ValidateResponse(validated=0, skipped=0, message="No records provided.")
 
-    # Step 4: Save returned JSON into validated table
-    validated_count = 0
-    skipped_count   = 0
-    now             = datetime.utcnow()
-    inserted_records = []
+    db = get_db()
+    skipped_count = 0
+    now = datetime.utcnow()
+    
+    # ── 1. Batch Duplicate Check ─────────────────────────────────────────────
+    incoming_emails = [r.email.strip().lower() for r in records if r.email]
+    cursor          = db["validated"].find({"email": {"$in": incoming_emails}}, {"email": 1})
+    db_existing     = {doc["email"] async for doc in cursor}
 
-    for record in validated_from_external:
-        # Deduplication check
-        email = record.get("email")
+    # ── 2. Prepare Documents ────────────────────────────────────────────────
+    ready_to_insert = []
+    seen_in_batch   = set()
+
+    for r in records:
+        email = (r.email or "").strip().lower()
         if not email:
             skipped_count += 1
             continue
-
-        existing = await db["validated"].find_one({"email": email})
-        if existing:
+            
+        if email in db_existing or email in seen_in_batch:
             skipped_count += 1
             continue
-
-        # Add validation timestamp
-        record["validated_at"] = now
+            
+        seen_in_batch.add(email)
         
-        try:
-            await db["validated"].insert_one(record)
-            # Remove the _id before adding to response if MongoDB added it
-            if "_id" in record:
-                del record["_id"]
-            inserted_records.append(record)
-            validated_count += 1
-        except Exception:
-            skipped_count += 1
+        # Prepare the doc matching the full schema
+        doc = r.dict()
+        doc["validated_at"] = now
+        # Ensure email is consistent
+        doc["email"] = email
+        ready_to_insert.append(doc)
 
-    # Log results
+    # ── 3. Bulk Insert ───────────────────────────────────────────────────────
+    inserted_count = 0
+    if ready_to_insert:
+        try:
+            await db["validated"].insert_many(ready_to_insert, ordered=False)
+            inserted_count = len(ready_to_insert)
+        except Exception as exc:
+            # Handle partial success (e.g. unique constraint race condition)
+            inserted_count = getattr(exc, "details", {}).get("nInserted", 0)
+            skipped_count += (len(ready_to_insert) - inserted_count)
+
+    # ── 4. History & Response ────────────────────────────────────────────────
     status = "success" if skipped_count == 0 else "partial"
     await log_history(
-        action="validate",
-        record_count=validated_count,
+        action="bulk_validate_ingest",
+        record_count=inserted_count,
         status=status,
-        filters=filters,
-        notes=f"Externally validated. {skipped_count} skipped."
+        notes=f"Bulk ingested validated records. {skipped_count} skipped."
     )
 
+    # Prepare response records (limit for sanity if huge)
+    response_records = [ValidatedRecord(**r) for r in ready_to_insert[:100]]
+
     return ValidateResponse(
-        validated=validated_count,
+        validated=inserted_count,
         skipped=skipped_count,
-        message=f"{validated_count} validated via external service, {skipped_count} skipped.",
-        records=inserted_records
+        message=f"{inserted_count} inserted, {skipped_count} skipped.",
+        records=response_records
     )
+

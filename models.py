@@ -28,6 +28,7 @@ class IngestRecord(BaseModel):
     mail_sender_name: Optional[str]      = None
     profile_name:     Optional[str]      = None
     mail_sending_date:Optional[datetime] = None
+    validation:        bool              = False
 
 
 class IngestSkipped(BaseModel):
@@ -54,6 +55,8 @@ class FilterParams(BaseModel):
     date_to:      Optional[datetime] = None
     serial_from:  Optional[int]      = None   # serial_no range start
     serial_to:    Optional[int]      = None   # serial_no range end
+    domain:       Optional[str]      = None   # e.g. "gmail.com"
+    country:      Optional[str]      = None   # e.g. "USA"
     limit:        Optional[int]      = None   # max records (None = all)
     offset:       Optional[int]      = 0      # skip N records
 
@@ -76,6 +79,7 @@ class RawRecord(BaseModel):
     mail_sender_name:  Optional[str]      = None
     profile_name:      Optional[str]      = None
     mail_sending_date: Optional[datetime] = None
+    validation:         bool              = False
 
 
 # ─────────────────────────────────────────────
@@ -108,6 +112,12 @@ class ValidateResponse(BaseModel):
     skipped:   int
     message:   str
     records:   list[ValidatedRecord] = []
+
+
+class ValidatedIngest(BaseModel):
+    """Schema for bulk validated records uploaded from frontend."""
+    records: list[ValidatedRecord]
+
 
 
 # ─────────────────────────────────────────────
