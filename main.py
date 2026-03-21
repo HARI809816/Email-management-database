@@ -1,4 +1,5 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from database import connect_db, close_db
@@ -18,6 +19,15 @@ app = FastAPI(
     description="Manages raw ingestion, validation, and history logging with MongoDB.",
     version="1.0.0",
     lifespan=lifespan
+)
+
+# ── CORS Middleware ───────────────────────────────────────────────────────────
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],           # Allow all origins
+    allow_credentials=True,
+    allow_methods=["*"],           # Allow all HTTP methods
+    allow_headers=["*"],           # Allow all HTTP headers
 )
 
 # ── Register all routers ──────────────────────────────────────────────────────

@@ -24,6 +24,12 @@ def build_validate_query(filters: ValidateFilterParams) -> dict:
         if filters.sno_to is not None:
             query["serial_no"]["$lte"] = filters.sno_to
 
+    if filters.country:
+        query["country"] = filters.country.strip()
+
+    if filters.domain:
+        query["domain"] = filters.domain.strip()
+
     return query
 
 

@@ -68,6 +68,8 @@ class ValidateFilterParams(BaseModel):
     limit:          Optional[int]      = None
     serial_no_from: Optional[int]      = None
     sno_to:         Optional[int]      = None
+    country:        Optional[str]      = None
+    domain:         Optional[str]      = None
 
 
 
