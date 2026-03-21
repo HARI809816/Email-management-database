@@ -1,6 +1,30 @@
 from datetime import datetime
-from models import FilterParams
+from models import FilterParams, ValidateFilterParams
 from database import get_db
+
+
+def build_validate_query(filters: ValidateFilterParams) -> dict:
+    """
+    Build a MongoDB query dict for validation export.
+    Uses from_date/to_date and serial_no_from/sno_to.
+    """
+    query = {}
+
+    if filters.from_date or filters.to_date:
+        query["date_added"] = {}
+        if filters.from_date:
+            query["date_added"]["$gte"] = filters.from_date
+        if filters.to_date:
+            query["date_added"]["$lte"] = filters.to_date
+
+    if filters.serial_no_from is not None or filters.sno_to is not None:
+        query["serial_no"] = {}
+        if filters.serial_no_from is not None:
+            query["serial_no"]["$gte"] = filters.serial_no_from
+        if filters.sno_to is not None:
+            query["serial_no"]["$lte"] = filters.sno_to
+
+    return query
 
 
 def build_query(filters: FilterParams) -> dict:
@@ -41,7 +65,7 @@ async def log_history(
     action: str,
     record_count: int,
     status: str = "success",
-    filters: FilterParams = None,
+    filters: FilterParams | ValidateFilterParams = None,
     notes: str = None
 ):
     """Insert a history log entry into the history collection."""

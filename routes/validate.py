@@ -2,30 +2,30 @@ from fastapi import APIRouter
 from datetime import datetime
 from database import get_db
 from models import (
-    FilterParams, ValidateResponse, ValidatedRecord, ValidatedIngest
+    ValidateFilterParams, ValidateResponse, ValidatedRecord, ValidatedIngest
 )
-from utils import build_query, log_history, serialize_doc
+from utils import build_validate_query, log_history, serialize_doc
 
 router = APIRouter(prefix="/validate", tags=["Validate"])
 
 
 @router.post("", response_model=list[dict])
-async def export_for_validation(filters: FilterParams = FilterParams()):
+async def export_for_validation(filters: ValidateFilterParams = ValidateFilterParams()):
     """
     Stage 1: Export records for validation.
-    1. Fetch raw records matching filters AND validation == False.
+    1. Fetch raw records matching simplified filters AND validation == False.
     2. Mark these records as validation = True (Auto-lock).
     3. Return them to the frontend for processing.
     """
     db    = get_db()
-    query = build_query(filters)
+    query = build_validate_query(filters)
     # Only fetch records NOT yet exported/validated
-    query["validation"] = False
+    # Use $ne: True to include records where the field is False OR missing (None)
+    query["validation"] = {"$ne": True}
 
     # Step 1: Fetch matching raw records
     cursor = db["raw"].find(query, {"_id": 0}).sort("serial_no", 1)
-    if filters.offset:
-        cursor = cursor.skip(filters.offset)
+    
     if filters.limit:
         cursor = cursor.limit(filters.limit)
 

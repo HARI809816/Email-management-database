@@ -61,6 +61,16 @@ class FilterParams(BaseModel):
     offset:       Optional[int]      = 0      # skip N records
 
 
+class ValidateFilterParams(BaseModel):
+    """Simplified filters specifically for exporting to validation."""
+    from_date:      Optional[datetime] = None
+    to_date:        Optional[datetime] = None
+    limit:          Optional[int]      = None
+    serial_no_from: Optional[int]      = None
+    sno_to:         Optional[int]      = None
+
+
+
 # ─────────────────────────────────────────────
 #  RAW RECORD (response shape)
 # ─────────────────────────────────────────────
