@@ -1,151 +1,101 @@
 # Data Manager API
-A FastAPI + MongoDB project to ingest, validate, and manage records with full history logging.
+A high-performance FastAPI + MongoDB project to ingest, validate, and manage email records with bulk-optimized processing and full history logging.
 
 ---
 
-## Project Structure
+## 🔥 Key Features
+
+- **Bulk Optimized Ingest**: Handles thousands of records in seconds using batch duplicate checking and bulk insertion.
+- **Automated Validation Proxy**: Fetches raw data, proxies it to an external validation app, and saves successful results.
+- **Admin Reset API**: Destructively clear `raw` or `validated` tables and reset serial ID counters via Swagger UI.
+- **History Logging**: Automatically tracks every action (ingest, validate, download) with success/failure status and record counts.
+
+---
+
+## 🏗️ Project Structure
 
 ```
 project/
-├── main.py                  # App entry point
-├── database.py              # MongoDB connection + serial counter
-├── models.py                # Pydantic schemas
+├── main.py                  # App entry point & router registration
+├── database.py              # MongoDB connection + bulk serial counter
+├── models.py                # Pydantic schemas (IngestRecord, ValidatedRecord, etc.)
 ├── utils.py                 # Shared helpers (query builder, history logger, serializer)
 ├── routes/
-│   ├── ingest.py            # POST /ingest
-│   ├── raw.py               # POST /raw/view, POST /raw/download
-│   ├── validate.py          # POST /validate (Automated Proxy)
-│   ├── validated.py         # POST /validated/view, POST /validated/download
-│   └── history.py           # GET /history
+│   ├── ingest.py            # POST /ingest (Bulk-optimized)
+│   ├── raw.py               # POST /raw/view, POST /raw/download (CSV)
+│   ├── validate.py          # POST /validate (Automated Proxy to external app)
+│   ├── validated.py         # POST /validated/view, POST /validated/download (CSV)
+│   ├── history.py           # GET /history (Activity logs)
+│   └── admin.py             # POST /admin/reset (Clear tables & Reset serials)
 ├── .env                     # MongoDB URI, DB name, and External Validation URL
-└── requirements.txt         # Python dependencies
+└── requirements.txt         # Python dependencies (fastapi, motor, httpx, etc.)
 ```
 
 ---
 
-## Requirements
+## 🚀 Installation & Setup
 
-- Python 3.11+
-- MongoDB (Local or Atlas)
-- httpx (for external validation)
+1. **Clone & Setup Environment**
+   ```bash
+   python -m venv venv
+   .\venv\Scripts\activate  # Windows
+   pip install -r requirements.txt
+   ```
 
----
+2. **Configure `.env`**
+   ```text
+   MONGO_URI=mongodb+srv://user:pass@cluster.mongodb.net/
+   DB_NAME=EmailDataBase
+   EXTERNAL_VALIDATION_URL=http://your-app-url/validate
+   ```
 
-## Installation
-
-```bash
-# 1. Clone or download the project
-cd project
-
-# 2. Create and activate virtual environment
-python -m venv venv
-.\venv\Scripts\activate
-
-# 3. Install dependencies
-pip install -r requirements.txt
-
-# 4. Configure your .env file
-# Edit .env and set your MONGO_URI, DB_NAME, and EXTERNAL_VALIDATION_URL
-
-# 5. Run the server
-uvicorn main:app --reload
-```
-
-API will be live at: http://localhost:8000
-Swagger docs at:     http://localhost:8000/docs
+3. **Run Server**
+   ```bash
+   uvicorn main:app --reload
+   ```
+   - **Swagger Docs**: [http://localhost:8000/docs](http://localhost:8000/docs)
+   - **Health Check**: [http://localhost:8000/](http://localhost:8000/)
 
 ---
 
-## External Validation Workflow
+## 📊 Database Schema
 
-This API supports an **Automated Validation Proxy** workflow:
-1. **Pull**: The server fetches raw records based on your filters (date, serial number, etc.).
-2. **Proxy**: The server POSTs these records to your `EXTERNAL_VALIDATION_URL`.
-3. **Wait**: The server waits for your external application to process the emails and return a JSON list of "Good" records.
-4. **Save**: The server automatically saves the returned records to the `validated` collection.
+### `raw` Collection
+Stores all incoming records. Duplicates are filtered in memory before hitting DB.
 
----
+| Required Field | Optional Field |
+|:---|:---|
+| `name` | `domain` (Auto-derived from email if absent) |
+| `email` (Unique) | `phone_number`, `label`, `status` |
+| `country` | `mail_sender_name`, `profile_name`, `mail_sending_date` |
 
-## Collections (Tables)
+### `validated` Collection
+Stores records successfully returned by the external validation service.
+- **Includes**: All raw fields + `validated_at` timestamp.
 
-### raw
-Stores all incoming records.
-
-| Field      | Type     | Notes                        |
-|------------|----------|------------------------------|
-| serial_no  | int      | Auto-incremented             |
-| name       | string   |                              |
-| email      | string   | Unique - duplicates skipped  |
-| country    | string   |                              |
-| date_added | datetime | Auto-set by server           |
-
-### validated
-Stores records returned by the external validation service.
-
-| Field        | Type     | Notes                        |
-|--------------|----------|------------------------------|
-| serial_no    | int      | Carried from raw             |
-| name         | string   |                              |
-| email        | string   | Unique - duplicates skipped  |
-| country      | string   |                              |
-| date_added   | datetime | Carried from raw             |
-| validated_at | datetime | Auto-set at validation time  |
-
-### history
-Logs every action performed in the system.
-
-| Field        | Type     | Notes                                                    |
-|--------------|----------|----------------------------------------------------------|
-| action       | string   | ingest / validate / download_raw / download_validated    |
-| performed_at | datetime | Auto-set by server                                       |
-| record_count | int      | Number of records affected                               |
-| filters_used | object   | Snapshot of filters used                                 |
-| status       | string   | success / partial / failed                               |
-| notes        | string   | e.g. "3 duplicates skipped"                              |
+### `history` Collection
+Logs every system action: `ingest`, `validate`, `download_raw`, `download_validated`.
 
 ---
 
-## API Endpoints
-
-### Ingest
-| Method | Endpoint | Description                           |
-|--------|----------|---------------------------------------|
-| POST   | /ingest  | Receive records for the raw collection |
-
-### Raw
-| Method | Endpoint      | Description         |
-|--------|---------------|---------------------|
-| POST   | /raw/view     | View raw records    |
-| POST   | /raw/download | Download raw as CSV |
-
-### Validate (The Automated Proxy)
-| Method | Endpoint  | Description                                      |
-|--------|-----------|--------------------------------------------------|
-| POST   | /validate | Trigger external validation and move to validated |
-
-**Note**: This endpoint coordinates with the `EXTERNAL_VALIDATION_URL` defined in your `.env`.
-
-### Validated
-| Method | Endpoint            | Description               |
-|--------|---------------------|---------------------------|
-| POST   | /validated/view     | View validated records    |
-| POST   | /validated/download | Download validated as CSV |
+## ⚙️ Bulk Ingest Optimization
+The `/ingest` endpoint is designed for high-volume uploads:
+- **Batch Lookups**: Uses `$in` to check thousands of existing emails in ONE query.
+- **Bulk Insert**: Uses `insert_many` to save all new records in ONE query.
+- **Serial Batching**: Allocates blocks of serial IDs atomically to prevent race conditions.
 
 ---
 
-## Environment Variables (.env)
-
-```text
-MONGO_URI=mongodb+srv://user:pass@cluster.mongodb.net/
-DB_NAME=EmailDataBase
-EXTERNAL_VALIDATION_URL=http://your-app-url/validate
-```
+## 🔒 Admin Actions
+Use the `/admin/reset` endpoint in Swagger to:
+1. Delete all records from `raw` or `validated`.
+2. Reset the ID counter back to **1**.
+*Note: History is preserved for auditing unless explicitly cleared.*
 
 ---
 
-## Technical Notes
-
-- **Deduplication**: Duplicate emails are automatically skipped during both ingest and validation.
-- **JSON Serialization**: The system handles MongoDB `datetime` objects by converting them to ISO strings before communicating with external APIs.
-- **Stability**: Removed terminal emojis to ensure compatibility with Windows Command Prompt and PowerShell (prevents UnicodeEncodeError).
-- **Atomic Counters**: `serial_no` is incremented using MongoDB's atomic `findAndModify` to ensure no overlaps.
+## 📡 External Validation Workflow
+1. **Pull**: Fetches raw records based on `FilterParams` (date range, serial range, limit).
+2. **Proxy**: POSTs raw JSON to `EXTERNAL_VALIDATION_URL`.
+3. **Wait**: External app validates and returns a list of "Good" records.
+4. **Save**: Successful records are automatically stored in the `validated` collection.
