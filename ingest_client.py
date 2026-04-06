@@ -48,13 +48,13 @@ def ingest(records: list[dict]) -> dict:
         return _ingest_via_blob(records)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 #  Internal helpers — you don't need to call these directly
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 def _ingest_direct(records: list[dict]) -> dict:
     """POST records as JSON directly (for small batches)."""
-    print(f"[ingest] Direct JSON → {len(records)} records")
+    print(f"[ingest] Direct JSON -> {len(records)} records")
     with httpx.Client(timeout=120) as client:
         r = client.post(
             f"{API_BASE}/ingest",
@@ -69,7 +69,7 @@ def _ingest_via_blob(records: list[dict]) -> dict:
     Upload records as a JSON blob, then trigger ingest from the URL.
     Used automatically when records > BLOB_THRESHOLD.
     """
-    print(f"[ingest] Large payload ({len(records)} records) → using Vercel Blob")
+    print(f"[ingest] Large payload ({len(records)} records) -> using Vercel Blob")
 
     if not BLOB_READ_WRITE_TOKEN:
         raise EnvironmentError(
@@ -103,5 +103,5 @@ def _ingest_via_blob(records: list[dict]) -> dict:
         r.raise_for_status()
         result = r.json()
 
-    print(f"[ingest] Done → inserted: {result.get('inserted')}, skipped: {result.get('skipped')}")
+    print(f"[ingest] Done -> inserted: {result.get('inserted')}, skipped: {result.get('skipped')}")
     return result
