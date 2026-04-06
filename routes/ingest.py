@@ -1,6 +1,8 @@
 import re
+import os
+import httpx
 from typing import Any
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from datetime import datetime
 from pydantic import BaseModel
 from pymongo.errors import BulkWriteError
@@ -213,6 +215,115 @@ async def ingest_records(payload: ExternalAppWrapper):
         record_count=total_inserted,
         status=status,
         notes=notes
+    )
+
+    return IngestResponse(
+        inserted=total_inserted,
+        skipped=skipped_count,
+        message=message,
+        skipped_details=response_skip,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+#  Vercel Blob Ingest
+# ─────────────────────────────────────────────────────────────────────────────
+
+class BlobIngestRequest(BaseModel):
+    """
+    Request body for blob-based ingestion.
+    The external app uploads a JSON file to Vercel Blob, then sends
+    only the URL here — keeping the HTTP body tiny (~100 bytes).
+    """
+    blob_url:     str  # Public URL returned by Vercel Blob after upload
+    delete_after: bool = True  # Auto-delete blob from storage after ingest
+
+
+@router.post("/blob", response_model=IngestResponse)
+async def ingest_from_blob(payload: BlobIngestRequest):
+    """
+    Download a JSON file from Vercel Blob and ingest its records.
+
+    Supports any file size (Vercel Blob allows up to 5 TB).
+    Completely bypasses Vercel's 4.5 MB serverless body limit.
+
+    JSON format accepted (both work):
+      • Wrapper: { "data": [ {...}, ... ] }   ← same as POST /ingest
+      • Bare:    [ {...}, ... ]
+    """
+    # ── 1. Download JSON from Vercel Blob ─────────────────────────────────────
+    try:
+        async with httpx.AsyncClient(timeout=300) as client:
+            response = await client.get(payload.blob_url)
+            response.raise_for_status()
+            raw = response.json()
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=502, detail=f"Failed to fetch blob: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Blob download error: {e}")
+
+    # ── 2. Parse records (support wrapper dict or bare list) ──────────────────
+    try:
+        if isinstance(raw, list):
+            # Bare array: [{"name":..., "email":..., "country":...}, ...]
+            records = [IngestRecord(**item) for item in raw]
+        elif isinstance(raw, dict):
+            # Wrapper: {"data": [...]} or {"preview": [...]}
+            wrapper  = ExternalAppWrapper(**raw)
+            records  = wrapper.data if wrapper.data else wrapper.preview
+        else:
+            raise ValueError("Unexpected JSON structure")
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"JSON parse error: {e}")
+
+    if not records:
+        return IngestResponse(inserted=0, skipped=0, message="No records in blob file.")
+
+    # ── 3. Auto-chunk + insert (reuses existing logic) ────────────────────────
+    db            = get_db()
+    total_inserted = 0
+    all_skipped:   list[IngestSkipped] = []
+    seen_globally: set[str]            = set()
+
+    chunks = (
+        [records[i : i + CHUNK_SIZE] for i in range(0, len(records), CHUNK_SIZE)]
+        if len(records) > AUTO_SPLIT_THRESHOLD
+        else [records]
+    )
+
+    for chunk in chunks:
+        ins, skipped = await _process_chunk(db, chunk, seen_globally)
+        total_inserted += ins
+        all_skipped.extend(skipped)
+
+    # ── 4. Optionally delete blob from storage ────────────────────────────────
+    if payload.delete_after:
+        token = os.getenv("BLOB_READ_WRITE_TOKEN", "")
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                await client.delete(
+                    payload.blob_url,
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+        except Exception:
+            pass  # Non-fatal — log silently, don't fail the response
+
+    # ── 5. Cap skipped_details + build response ───────────────────────────────
+    skipped_count = len(all_skipped)
+    truncated     = skipped_count > MAX_SKIP_DETAILS
+    response_skip = all_skipped[:MAX_SKIP_DETAILS]
+
+    message = f"{total_inserted} inserted, {skipped_count} skipped."
+    if truncated:
+        message += f" (showing first {MAX_SKIP_DETAILS} skip reasons)"
+
+    status = "success" if skipped_count == 0 else "partial"
+    notes  = f"{skipped_count} skipped." if skipped_count else None
+    await log_history(
+        action="ingest_blob",
+        record_count=total_inserted,
+        status=status,
+        notes=notes,
     )
 
     return IngestResponse(
