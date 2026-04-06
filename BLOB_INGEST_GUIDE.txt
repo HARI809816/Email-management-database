@@ -1,0 +1,167 @@
+================================================================
+  HOW TO USE THE BLOB INGEST ENDPOINT
+  (For uploading large datasets — 15k, 39k, or more records)
+================================================================
+
+WHY THIS EXISTS
+---------------
+The old POST /ingest endpoint fails with a 422 error for large
+payloads (15k–39k records) because Vercel limits the request
+body to ~4.5 MB. This new method bypasses that limit completely.
+
+
+================================================================
+  STEP 1 — ADD YOUR BLOB TOKEN TO VERCEL ENVIRONMENT VARIABLES
+================================================================
+
+1. Go to: https://vercel.com/dashboard
+2. Open your project → Settings → Environment Variables
+3. Add a new variable:
+
+   Name  : BLOB_READ_WRITE_TOKEN
+   Value : vercel_blob_rw_xxxx...   ← copy from Vercel Blob dashboard
+
+4. Redeploy the project after adding the variable.
+
+Also add it to your local .env file:
+   BLOB_READ_WRITE_TOKEN=vercel_blob_rw_xxxx...
+
+
+================================================================
+  STEP 2 — CHANGES IN YOUR EXTERNAL PYTHON APP
+================================================================
+
+Install httpx if not already installed:
+   pip install httpx
+
+Replace your current ingest call with this:
+
+--------------------------------------------------------------
+import httpx
+import json
+import os
+
+BLOB_TOKEN  = os.getenv("BLOB_READ_WRITE_TOKEN")
+API_BASE    = "https://email-management-database.vercel.app"
+
+def ingest_large(records: list[dict]):
+    """
+    Upload any number of records using Vercel Blob.
+    records = list of dicts with keys: name, email, country,
+              and optionally: domain, phone_number, label,
+              status, mail_sender_name, profile_name,
+              mail_sending_date
+    """
+    # ── Step A: Upload JSON to Vercel Blob ──────────────────
+    payload = json.dumps({"data": records}).encode("utf-8")
+
+    upload = httpx.put(
+        "https://blob.vercel-storage.com/emails-upload.json",
+        content=payload,
+        headers={
+            "Authorization": f"Bearer {BLOB_TOKEN}",
+            "x-content-type": "application/json",
+            "x-access": "public",
+        },
+        timeout=120,
+    )
+    upload.raise_for_status()
+    blob_url = upload.json()["url"]
+    print(f"Uploaded to blob: {blob_url}")
+
+    # ── Step B: Tell the API to ingest from that URL ────────
+    response = httpx.post(
+        f"{API_BASE}/ingest/blob",
+        json={"blob_url": blob_url, "delete_after": True},
+        timeout=600,   # large datasets may take a few minutes
+    )
+    response.raise_for_status()
+    result = response.json()
+    print(f"Inserted : {result['inserted']}")
+    print(f"Skipped  : {result['skipped']}")
+    print(f"Message  : {result['message']}")
+    return result
+--------------------------------------------------------------
+
+Call it like this:
+   records = [{"name": "Alice", "email": "alice@ex.com", "country": "US"}, ...]
+   ingest_large(records)
+
+
+================================================================
+  HOW IT WORKS (SUMMARY)
+================================================================
+
+  External App
+      │
+      ├─ 1. Upload JSON file → Vercel Blob  (any size, up to 5 TB)
+      │       Gets back a blob_url
+      │
+      ├─ 2. POST /ingest/blob  { "blob_url": "...", "delete_after": true }
+      │       (tiny ~100 byte request — no size limit)
+      │
+      └─ 3. Server downloads file → splits into 5k chunks →
+             inserts into MongoDB → deletes blob → returns result
+
+
+================================================================
+  ENDPOINT REFERENCE
+================================================================
+
+POST /ingest/blob
+  Body  : { "blob_url": "https://...", "delete_after": true }
+  Returns: { "inserted": N, "skipped": M, "message": "..." }
+
+  delete_after = true  → blob is deleted from storage after ingest
+  delete_after = false → blob stays (useful for testing)
+
+
+================================================================
+  SUPPORTED JSON FORMATS (both work)
+================================================================
+
+Format 1 — Wrapper (recommended, same as old /ingest):
+  { "data": [ {"name":..., "email":..., "country":...}, ... ] }
+
+Format 2 — Bare array:
+  [ {"name":..., "email":..., "country":...}, ... ]
+
+
+================================================================
+  RECORD FIELDS
+================================================================
+
+  REQUIRED:
+    name       (string)
+    email      (string)
+    country    (string)
+
+  OPTIONAL:
+    domain
+    phone_number
+    label
+    status
+    mail_sender_name
+    profile_name
+    mail_sending_date  (ISO datetime string, e.g. "2024-01-15T10:30:00")
+
+
+================================================================
+  WHAT CHANGED IN THIS PROJECT
+================================================================
+
+  routes/ingest.py
+    → Added  POST /ingest/blob  endpoint
+    → Added  BlobIngestRequest  model
+    → Added  httpx + os  imports
+    → Existing POST /ingest is UNCHANGED (still works for small data)
+
+  database.py
+    → socketTimeoutMS  increased to 120s  (was 20s)
+    → connectTimeoutMS increased to 15s   (was 8s)
+
+  main.py
+    → allow_credentials changed to False  (required when allow_origins=*)
+
+
+================================================================
