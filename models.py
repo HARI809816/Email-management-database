@@ -1,5 +1,5 @@
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional, List
+from typing import Optional, List, Any
 from datetime import datetime
 
 
@@ -14,10 +14,10 @@ class IngestRecord(BaseModel):
     Optional : domain, phone_number, label, status,
                mail_sender_name, profile_name, mail_sending_date
     """
-    # ── Required ──────────────────────────────
-    name:             str
-    email:            str   # kept as str; validated manually in ingest route
-    country:          str
+    # ── Fields (all optional to prevent 422 blocking) ─────
+    name:             Optional[str]      = None
+    email:            Optional[str]      = None
+    country:          Optional[str]      = None
 
     # ── Optional ──────────────────────────────
     domain:           Optional[str]      = None
@@ -27,7 +27,7 @@ class IngestRecord(BaseModel):
     status:           Optional[str]      = None
     mail_sender_name: Optional[str]      = None
     profile_name:     Optional[str]      = None
-    mail_sending_date:Optional[datetime] = None
+    mail_sending_date:Optional[Any]      = None
     validation:        bool              = False
 
 
