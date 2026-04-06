@@ -22,9 +22,9 @@ def _get_client():
             tlsCAFile=certifi.where(),
             # Required on Vercel (Python 3.12 + OpenSSL 3 vs MongoDB Atlas TLS)
             tlsAllowInvalidCertificates=True,
-            serverSelectionTimeoutMS=8000,
-            connectTimeoutMS=8000,
-            socketTimeoutMS=20000,
+            serverSelectionTimeoutMS=15_000,
+            connectTimeoutMS=15_000,
+            socketTimeoutMS=120_000,   # 2 min — needed for large batch inserts
         )
         _db = _client[DB_NAME]
     return _client, _db
