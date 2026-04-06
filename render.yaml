@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: email-management-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: MONGO_URI
+        sync: false          # set manually in Render dashboard
+      - key: DB_NAME
+        value: EmailDataBase
+      - key: BLOB_READ_WRITE_TOKEN
+        sync: false          # set manually in Render dashboard
