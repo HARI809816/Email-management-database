@@ -110,11 +110,16 @@ async def bulk_insert_validated(payload: ValidatedIngest):
     seen_in_batch   = set()
 
     for r in records:
-        email = (r.email or "").strip().lower()
-        if not email:
+        email   = (r.email   or "").strip().lower()
+        name    = (r.name    or "").strip()
+        country = (r.country or "").strip()
+
+        # 1. Mandatory field check
+        if not email or not name or not country:
             skipped_count += 1
             continue
             
+        # 2. Duplicate check (DB + Batch)
         if email in db_existing or email in seen_in_batch:
             skipped_count += 1
             continue
@@ -124,8 +129,10 @@ async def bulk_insert_validated(payload: ValidatedIngest):
         # Prepare the doc matching the full schema
         doc = r.dict()
         doc["validated_at"] = now
-        # Ensure email is consistent
-        doc["email"] = email
+        # Ensure validated/cleaned values are used
+        doc["email"]   = email
+        doc["name"]    = name
+        doc["country"] = country
         ready_to_insert.append(doc)
 
     # ── 3. Bulk Insert ───────────────────────────────────────────────────────

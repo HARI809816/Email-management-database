@@ -100,9 +100,9 @@ class RawRecord(BaseModel):
 
 class ValidatedRecord(BaseModel):
     serial_no:         int
-    name:              str
-    email:             str
-    country:           str
+    name:              Optional[str]      = None
+    email:             Optional[str]      = None
+    country:           Optional[str]      = None
     date_added:        datetime
     validated_at:      datetime
     # optional extended fields

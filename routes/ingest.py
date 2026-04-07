@@ -314,8 +314,8 @@ async def ingest_from_blob(payload: BlobIngestRequest):
     response_skip = all_skipped[:MAX_SKIP_DETAILS]
 
     message = f"{total_inserted} inserted, {skipped_count} skipped."
-    if truncated:
-        message += f" (showing first {MAX_SKIP_DETAILS} skip reasons)"
+    # if truncated:
+    #     message += f" (showing first {MAX_SKIP_DETAILS} skip reasons)"
 
     status = "success" if skipped_count == 0 else "partial"
     notes  = f"{skipped_count} skipped." if skipped_count else None
