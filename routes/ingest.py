@@ -204,8 +204,8 @@ async def ingest_records(payload: ExternalAppWrapper):
     response_skip = all_skipped[:MAX_SKIP_DETAILS]
 
     message = f"{total_inserted} inserted, {skipped_count} skipped."
-    if truncated:
-        message += f" (showing first {MAX_SKIP_DETAILS} skip reasons)"
+    # if truncated:
+    #     message += f" (showing first {MAX_SKIP_DETAILS} skip reasons)"
 
     # ── History log ───────────────────────────────────────────────────────────
     status = "success" if skipped_count == 0 else "partial"
