@@ -1,4 +1,6 @@
+import json
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 from datetime import datetime
 from database import get_db
 from models import (
@@ -9,49 +11,77 @@ from utils import build_validate_query, log_history, serialize_doc
 router = APIRouter(prefix="/validate", tags=["Validate"])
 
 
-@router.post("", response_model=list[dict])
+@router.post("")
 async def export_for_validation(filters: ValidateFilterParams = ValidateFilterParams()):
     """
     Stage 1: Export records for validation.
-    1. Fetch raw records matching simplified filters AND validation == False.
-    2. Mark these records as validation = True (Auto-lock).
-    3. Return them to the frontend for processing.
+    Optimized for ALL dataset sizes:
+    1. Uses a cursor to avoid loading everything into memory.
+    2. Streams results as NDJSON.
+    3. Updates records in small batches (1,000) WHILE streaming to ensure only
+       exported records are marked, and to reduce initial latency.
     """
     db    = get_db()
     query = build_validate_query(filters)
-    # Only fetch records NOT yet exported/validated
-    # Use $ne: True to include records where the field is False OR missing (None)
     query["validation"] = {"$ne": True}
 
-    # Step 1: Fetch matching raw records
+    # Step 1: Pre-check if ANY records exist matching the query
+    # (High performance check before starting the stream)
+    exists = await db["raw"].find_one(query, {"_id": 1})
+    if not exists:
+        return {"status": "success", "message": "No records found matching the given filters.", "records": []}
+
+    # Step 2: Initialize Cursor
     cursor = db["raw"].find(query, {"_id": 0}).sort("serial_no", 1)
     
     if filters.limit:
         cursor = cursor.limit(filters.limit)
 
-    raw_records = await cursor.to_list(length=None)
+    async def record_generator():
+        current_batch_emails = []
+        record_count = 0
+        
+        async for doc in cursor:
+            # Yield record immediately for low latency
+            yield json.dumps(serialize_doc(doc)) + "\n"
+            
+            # Add to batch for validation update
+            if "email" in doc:
+                current_batch_emails.append(doc["email"])
+                record_count += 1
+            
+            # Update in chunks of 500
+            if len(current_batch_emails) >= 500:
+                await db["raw"].update_many(
+                    {"email": {"$in": current_batch_emails}},
+                    {"$set": {"validation": True}}
+                )
+                current_batch_emails = []
 
-    if not raw_records:
-        return []
-
-    # Step 2: Mark as processing (Auto-lock)
-    batch_emails = [doc["email"] for doc in raw_records]
-    if batch_emails:
-        await db["raw"].update_many(
-            {"email": {"$in": batch_emails}},
-            {"$set": {"validation": True}}
+        # Final batch update
+        if current_batch_emails:
+            await db["raw"].update_many(
+                {"email": {"$in": current_batch_emails}},
+                {"$set": {"validation": True}}
+            )
+            
+        # Log History silently at the end (could be in a background task)
+        # Note: log_history is async and we are inside a generator
+        # It's better to log after the stream, but StreamingResponse takes over.
+        # However, it works fine in FastAPI/Motor.
+        await log_history(
+            action="export_for_validation",
+            record_count=record_count,
+            status="success",
+            filters=filters,
+            notes=f"Exported and locked {record_count} records for processing."
         )
 
-    # Step 3: Log & Return
-    await log_history(
-        action="export_for_validation",
-        record_count=len(raw_records),
-        status="success",
-        filters=filters,
-        notes=f"Exported {len(raw_records)} records for processing."
+    return StreamingResponse(
+        record_generator(),
+        media_type="application/x-ndjson",
+        headers={"Content-Disposition": "attachment; filename=export_validation.jsonl"}
     )
-
-    return [serialize_doc(doc) for doc in raw_records]
 
 
 @router.post("/bulk-insert", response_model=ValidateResponse)

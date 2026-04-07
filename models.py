@@ -131,6 +131,13 @@ class ValidatedIngest(BaseModel):
     records: list[ValidatedRecord]
 
 
+class BulkValidationUpdate(BaseModel):
+    """Request schema for bulk updating the validation status in the raw collection."""
+    emails:   Optional[list[str]] = None
+    filters:  Optional[ValidateFilterParams] = None
+    validation: bool
+
+
 
 # ─────────────────────────────────────────────
 #  HISTORY RECORD (response shape)

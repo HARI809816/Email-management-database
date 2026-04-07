@@ -1,0 +1,152 @@
+================================================================================
+DATA MANAGER API - COMPREHENSIVE TESTING GUIDE
+================================================================================
+
+This guide covers all available API endpoints and how to test them correctly.
+
+--------------------------------------------------------------------------------
+COMMON ERRORS - READ BEFORE TESTING
+--------------------------------------------------------------------------------
+- ERROR: "JSON decode error" or "Expecting property name"
+  CAUSE: You likely have a TRAILING COMMA. 
+  Example of WRONG JSON:
+  {
+    "limit": 100,
+  }  <-- This comma is NOT allowed!
+  
+  Example of CORRECT JSON:
+  {
+    "limit": 100
+  }  <-- NO comma after the last item.
+
+--------------------------------------------------------------------------------
+CRITICAL RULE: JSON FORMATTING
+--------------------------------------------------------------------------------
+- Use double quotes "" for all property names and string values.
+- NO TRAILING COMMAS: Standard JSON does not allow a comma after the last 
+  item in a list or object.
+  Example BAD:  { "id": 1, }
+  Example GOOD: { "id": 1 }
+
+--------------------------------------------------------------------------------
+1. INGESTION (Adding new data)
+--------------------------------------------------------------------------------
+
+POST /ingest
+Receive records from another service.
+Payload Example:
+{
+  "data": [
+    {
+      "name": "John Doe",
+      "email": "john@example.com",
+      "country": "USA",
+      "domain": "example.com"
+    }
+  ]
+}
+
+POST /ingest/blob
+Ingest huge datasets via Vercel Blob URL (bypasses payload limits).
+Payload Example:
+{
+  "blob_url": "https://example-blob-url.json",
+  "delete_after": true
+}
+
+--------------------------------------------------------------------------------
+2. VALIDATION WORKFLOW
+--------------------------------------------------------------------------------
+
+POST /validate
+Export records for validation (Stage 1).
+Optimized for 40k+ records. Returns a Stream of JSON (NDJSON).
+Payload Example (Filters are optional):
+{
+  "limit": 1000,
+  "country": "USA"
+}
+
+POST /validate/bulk-insert
+Upload validated records back to the system (Stage 2).
+Payload Example:
+{
+  "records": [
+    {
+      "serial_no": 1,
+      "name": "John Doe",
+      "email": "john@example.com",
+      "country": "USA",
+      "date_added": "2024-04-07T10:00:00Z"
+    }
+  ]
+}
+
+--------------------------------------------------------------------------------
+3. RAW DATA MANAGEMENT
+--------------------------------------------------------------------------------
+
+POST /raw/view
+View records in the raw table with filters.
+Payload Example:
+{
+  "domain": "gmail.com",
+  "limit": 50
+}
+
+POST /raw/download
+Download raw records as a CSV file.
+Payload Example:
+{
+  "country": "India"
+}
+
+POST /raw/bulk-validation
+Set "validation" flag to true/false for many records at once.
+Payload Example (Use emails OR filters):
+{
+  "emails": ["test1@example.com", "test2@example.com"],
+  "validation": true
+}
+OR
+{
+  "filters": {
+    "serial_no_from": 1,
+    "sno_to": 1000
+  },
+  "validation": false
+}
+
+--------------------------------------------------------------------------------
+4. VALIDATED DATA MANAGEMENT
+--------------------------------------------------------------------------------
+
+POST /validated/view
+View records that have already been validated.
+Payload Example:
+{
+  "limit": 20
+}
+
+POST /validated/download
+Download validated records as a CSV file.
+Payload Example:
+{
+  "date_from": "2024-01-01T00:00:00Z"
+}
+
+--------------------------------------------------------------------------------
+5. HISTORY & ADMIN
+--------------------------------------------------------------------------------
+
+GET /history
+View activity logs.
+Query Params: action=ingest, limit=50, offset=0
+
+POST /admin/reset?collection=raw
+DANGER: Clears the entire collection and resets serial numbers to 1.
+Values: raw, validated
+
+================================================================================
+END OF GUIDE
+================================================================================
